@@ -1,144 +1,132 @@
 import streamlit as st
-import pandas as pd
 import sqlite3
-from datetime import datetime, date
+import pandas as pd
+from datetime import datetime
 import plotly.express as px
 import plotly.graph_objects as go
 
 # Sayfa Yapılandırması
 st.set_page_config(
-    page_title="Gelir-Gider & Muhasebe Takip",
+    page_title="Ön Muhasebe & Kâr-Zarar Takip",
     page_icon="💼",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Veritabanı Bağlantısı ve Tablo Oluşturma
-def db_baglantisi():
-    conn = sqlite3.connect("muhasebe.db", check_same_thread=False)
-    return conn
+# Veritabanı Başlatma
+DB_FILE = "muhasebe.db"
 
-def tablolari_olustur():
-    with db_baglantisi() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS islemler (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                tarih TEXT NOT NULL,
-                tur TEXT NOT NULL,
-                kategori TEXT NOT NULL,
-                tutar REAL NOT NULL,
-                aciklama TEXT,
-                yil_ay TEXT NOT NULL
-            )
-        """)
-        conn.commit()
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS islemler (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tarih TEXT NOT NULL,
+            tur TEXT NOT NULL,
+            kategori TEXT NOT NULL,
+            aciklama TEXT,
+            tutar REAL NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
 
-tablolari_olustur()
+init_db()
 
-# Veritabanı Yardımcı Fonksiyonları
-def islem_ekle(tarih, tur, kategori, tutar, aciklama):
-    yil_ay = tarih.strftime("%Y-%m")
-    with db_baglantisi() as conn:
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT INTO islemler (tarih, tur, kategori, tutar, aciklama, yil_ay)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (tarih.strftime("%Y-%m-%d"), tur, kategori, tutar, aciklama, yil_ay))
-        conn.commit()
+# Veri Tabanı Yardımcı Fonksiyonları
+def veri_ekle(tarih, tur, kategori, aciklama, tutar):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute(
+        "INSERT INTO islemler (tarih, tur, kategori, aciklama, tutar) VALUES (?, ?, ?, ?, ?)",
+        (tarih.strftime("%Y-%m-%d"), tur, kategori, aciklama, float(tutar))
+    )
+    conn.commit()
+    conn.close()
 
-def islem_sil(islem_id):
-    with db_baglantisi() as conn:
-        cursor = conn.cursor()
-        cursor.execute("DELETE FROM islemler WHERE id = ?", (islem_id,))
-        conn.commit()
+def veri_sil(islem_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("DELETE FROM islemler WHERE id = ?", (islem_id,))
+    conn.commit()
+    conn.close()
 
-def islemleri_getir(yil_ay=None):
-    with db_baglantisi() as conn:
-        if yil_ay and yil_ay != "Tüm Zamanlar":
-            df = pd.read_sql_query(
-                "SELECT * FROM islemler WHERE yil_ay = ? ORDER BY tarih DESC, id DESC",
-                conn,
-                params=(yil_ay,)
-            )
-        else:
-            df = pd.read_sql_query(
-                "SELECT * FROM islemler ORDER BY tarih DESC, id DESC",
-                conn
-            )
+def verileri_getir():
+    conn = sqlite3.connect(DB_FILE)
+    df = pd.read_sql_query("SELECT * FROM islemler ORDER BY tarih DESC, id DESC", conn)
+    conn.close()
+    if not df.empty:
+        df["tarih"] = pd.to_datetime(df["tarih"])
+        df["yil_ay"] = df["tarih"].dt.strftime("%Y-%m")
     return df
 
-def mevcut_aylari_getir():
-    with db_baglantisi() as conn:
-        df = pd.read_sql_query("SELECT DISTINCT yil_ay FROM islemler ORDER BY yil_ay DESC", conn)
-    return df["yil_ay"].tolist()
+# Verileri Yükle
+df = verileri_getir()
 
-# CSS İle Arayüzü Güzelleştirme
-st.markdown("""
-<style>
-    .metric-card {
-        background-color: #f8f9fa;
-        border-radius: 10px;
-        padding: 15px 20px;
-        border-left: 5px solid #2b5c8f;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-    }
-    .stDataFrame {
-        border-radius: 8px;
-        overflow: hidden;
-    }
-</style>
-""", unsafe_allow_html=True)
+# Başlık ve Üst Panel
+st.title("💼 Aylık Ön Muhasebe & Kâr / Zarar Yönetimi")
+st.caption("Gelir (Girdi) ve Gider (Çıktı) kalemlerinizi yönetin, aylık kâr/zarar durumunuzu anlık takip edin.")
 
-# Başlık
-st.title("💼 Gelir - Gider & Kâr/Zarar Muhasebe Takip Sistemi")
-st.markdown("Aylık finansal hareketlerinizi kaydedin, kategorilendirin ve kâr/zarar durumunuzu anlık olarak analiz edin.")
-st.write("---")
-
-# Yan Panel (Sidebar) - Filtreleme ve Hızlı İşlem
-st.sidebar.header("🗓️ Dönem Seçimi")
-ay_listesi = mevcut_aylari_getir()
-suanki_ay = datetime.now().strftime("%Y-%m")
-
-secenekler = ["Tüm Zamanlar"]
-if suanki_ay not in ay_listesi:
-    secenekler.append(suanki_ay)
-secenekler.extend(ay_listesi)
-secenekler = sorted(list(set(secenekler)), reverse=True)
-
-secilen_ay = st.sidebar.selectbox("Görüntülenecek Ay / Dönem:", secenekler, index=0)
-
-# Yan Panel - Yeni Kayıt Formu
-st.sidebar.markdown("---")
-st.sidebar.header("➕ Yeni Kayıt Ekle")
-
-with st.sidebar.form(key="islem_formu", clear_on_submit=True):
-    islem_tur = st.selectbox("İşlem Türü", ["Gelir (Girdi)", "Gider (Çıktı)"])
+# Kenar Çubuğu: Yeni Kalem Ekleme ve Ay Filtresi
+with st.sidebar:
+    st.header("➕ Yeni Kalem Ekle")
     
-    gelir_kategorileri = ["Satış / Ciro", "Hizmet Bedeli", "Kira Geliri", "Yatırım", "Diğer Gelir"]
-    gider_kategorileri = ["Kira", "Maaş / Personel", "Fatura (Elektrik/Su/İnt)", "Hammadde / Mal Alımı", "Vergi / Harç", "Pazarlama / Reklam", "Ulaşım / Yakıt", "Diğer Gider"]
-    
-    kategori_secenek = gelir_kategorileri if "Gelir" in islem_tur else gider_kategorileri
-    kategori = st.selectbox("Kategori", kategori_secenek)
-    
-    tutar = st.number_input("Tutar (₺)", min_value=0.01, step=50.0, format="%.2f")
-    tarih = st.date_input("İşlem Tarihi", value=date.today())
-    aciklama = st.text_input("Açıklama (Opsiyonel)", "")
-    
-    kaydet_btn = st.form_submit_button("💾 İşlemi Kaydet")
-    
-    if kaydet_btn:
-        tur_kod = "Gelir" if "Gelir" in islem_tur else "Gider"
-        islem_ekle(tarih, tur_kod, kategori, tutar, aciklama)
-        st.success("✅ İşlem başarıyla kaydedildi!")
-        st.rerun()
+    with st.form("yeni_islem_formu", clear_on_submit=True):
+        tarih = st.date_input("İşlem Tarihi", value=datetime.today())
+        tur = st.radio("İşlem Türü", options=["Gelir (Girdi)", "Gider (Çıktı)"], horizontal=True)
+        
+        gelir_kategorileri = ["Satış / Ciro", "Hizmet Geliri", "Tahsilat", "Faiz / Yatırım", "Diğer Gelir"]
+        gider_kategorileri = ["Kira", "Personel / Maaş", "Fatura (Elektrik/Su/İnt)", "Hammadde / Malzeme", "Vergi / Harç", "Pazarlama / Reklam", "Ulaşım / Yakıt", "Diğer Gider"]
+        
+        kategori_listesi = gelir_kategorileri if "Gelir" in tur else gider_kategorileri
+        kategori = st.selectbox("Kategori", options=kategori_listesi)
+        
+        ozel_kategori = st.text_input("Özel Kategori (Opsiyonel)")
+        if ozel_kategori.strip():
+            kategori = ozel_kategori.strip()
+            
+        aciklama = st.text_area("Açıklama", placeholder="İşlem detayı (Örn: Mart ayı dükkan kirası)")
+        tutar = st.number_input("Tutar (₺)", min_value=0.01, step=100.0, format="%.2f")
+        
+        kaydet = st.form_submit_button("💾 Kalemi Kaydet", use_container_width=True)
+        if kaydet:
+            tur_kisa = "Gelir" if "Gelir" in tur else "Gider"
+            veri_ekle(tarih, tur_kisa, kategori, aciklama, tutar)
+            st.success(f"{tur_kisa} başarıyla kaydedildi!")
+            st.rerun()
 
-# Ana Sayfa Verileri Getirme
-df_islemler = islemleri_getir(secilen_ay)
+    st.markdown("---")
+    st.header("🗓️ Ay Seçimi")
+    
+    # Mevcut ayların listesini çıkar
+    if not df.empty:
+        mevcut_aylar = sorted(df["yil_ay"].unique(), reverse=True)
+        suanki_ay = datetime.today().strftime("%Y-%m")
+        if suanki_ay not in mevcut_aylar:
+            mevcut_aylar.insert(0, suanki_ay)
+    else:
+        mevcut_aylar = [datetime.today().strftime("%Y-%m")]
 
-# KPI / Özet Kartları
-toplam_gelir = df_islemler[df_islemler["tur"] == "Gelir"]["tutar"].sum() if not df_islemler.empty else 0.0
-toplam_gider = df_islemler[df_islemler["tur"] == "Gider"]["tutar"].sum() if not df_islemler.empty else 0.0
+    secilen_ay = st.selectbox(
+        "Görüntülenecek Ayı Seçin",
+        options=["Tüm Zamanlar"] + mevcut_aylar,
+        index=1 if len(mevcut_aylar) > 0 else 0
+    )
+
+# Filtreleme
+if secilen_ay == "Tüm Zamanlar":
+    aktif_df = df.copy()
+    donem_metni = "Tüm Zamanlar"
+else:
+    aktif_df = df[df["yil_ay"] == secilen_ay].copy() if not df.empty else pd.DataFrame()
+    donem_metni = datetime.strptime(secilen_ay, "%Y-%m").strftime("%B %Y") if secilen_ay != "Tüm Zamanlar" else "Seçili Dönem"
+
+# Metrik Kartları
+st.subheader(f"📊 {donem_metni} Özeti")
+
+toplam_gelir = aktif_df[aktif_df["tur"] == "Gelir"]["tutar"].sum() if not aktif_df.empty else 0.0
+toplam_gider = aktif_df[aktif_df["tur"] == "Gider"]["tutar"].sum() if not aktif_df.empty else 0.0
 net_kar = toplam_gelir - toplam_gider
 
 col1, col2, col3, col4 = st.columns(4)
@@ -156,179 +144,173 @@ with col2:
     )
 
 with col3:
+    kar_renk = "normal" if net_kar >= 0 else "inverse"
     st.metric(
         label="⚖️ Net Kâr / Zarar",
         value=f"{net_kar:,.2f} ₺",
-        delta=f"{net_kar:,.2f} ₺",
-        delta_color="normal" if net_kar >= 0 else "inverse"
+        delta=f"{(net_kar):,.2f} ₺ ({'KÂR' if net_kar >= 0 else 'ZARAR'})",
+        delta_color=kar_renk
     )
 
 with col4:
-    kar_marji = ((net_kar / toplam_gelir) * 100) if toplam_gelir > 0 else 0
+    kar_marji = (net_kar / toplam_gelir * 100) if toplam_gelir > 0 else 0.0
     st.metric(
-        label="📊 Kâr Marjı",
-        value=f"%{kar_marji:.1f}"
+        label="📈 Kâr Marjı",
+        value=f"%{kar_marji:.1f}" if toplam_gelir > 0 else "0.0%"
     )
 
-st.write("---")
+st.markdown("---")
 
-# Sekmeler
-tab1, tab2, tab3 = st.tabs(["📋 İşlem Listesi ve Silme", "📈 Grafikler ve Analiz", "📊 Aylık Karşılaştırma Raporu"])
+# Sekmeli Detay Görünümü
+tab1, tab2, tab3 = st.tabs(["📋 İşlem Kalemleri & Silme", "📊 Grafikler ve Analiz", "📈 Yıllık/Aylık Kâr-Zarar Tablosu"])
 
+# TAB 1: İşlem Kalemleri & Silme
 with tab1:
-    st.subheader(f"Dönem İşlemleri ({secilen_ay})")
+    st.write(f"### {donem_metni} - Kayıtlı Kalemler")
     
-    if df_islemler.empty:
-        st.info("Bu döneme ait henüz kayıtlı bir gelir veya gider bulunmuyor. Sol menüden yeni işlem ekleyebilirsiniz.")
+    if aktif_df.empty:
+        st.info("Bu dönem için henüz bir girdi veya çıktı kaydı bulunmuyor. Soldaki menüden yeni kalem ekleyebilirsiniz.")
     else:
-        # Silme Bölümü
-        col_list, col_sil = st.columns([3, 1])
+        # Tablo Görünümü
+        gosterim_df = aktif_df.copy()
+        gosterim_df["Tarih"] = gosterim_df["tarih"].dt.strftime("%d.%m.%Y")
+        gosterim_df["Tutar (₺)"] = gosterim_df["tutar"].apply(lambda x: f"{x:,.2f} ₺")
+        gosterim_df = gosterim_df.rename(columns={
+            "id": "ID",
+            "tur": "Tür",
+            "kategori": "Kategori",
+            "aciklama": "Açıklama"
+        })
         
-        with col_sil:
-            st.markdown("#### 🗑️ İşlem Sil")
-            silinecek_id = st.selectbox(
-                "Silmek istediğiniz ID:",
-                options=df_islemler["id"].tolist(),
-                format_func=lambda x: f"ID #{x} - {df_islemler.loc[df_islemler['id'] == x, 'kategori'].values[0]} ({df_islemler.loc[df_islemler['id'] == x, 'tutar'].values[0]:,.2f} ₺)"
-            )
-            
-            if st.button("⚠️ Seçilen İşlemi Sil", type="primary"):
-                islem_sil(silinecek_id)
-                st.warning(f"ID #{silinecek_id} başarıyla silindi!")
-                st.rerun()
-                
-            # CSV Dışa Aktarma
-            csv_data = df_islemler.to_csv(index=False).encode('utf-8')
-            st.download_button(
-                label="📥 Tabloyu CSV Olarak İndir",
-                data=csv_data,
-                file_name=f"muhasebe_{secilen_ay}.csv",
-                mime="text/csv"
-            )
-        
-        with col_list:
-            st.markdown("#### 📋 Kayıtlı Hareketler")
-            
-            gorunum_df = df_islemler.copy()
-            gorunum_df["Tutar (₺)"] = gorunum_df["tutar"].apply(lambda x: f"{x:,.2f} ₺")
-            gorunum_df = gorunum_df.rename(columns={
-                "id": "ID",
-                "tarih": "Tarih",
-                "tur": "Tür",
-                "kategori": "Kategori",
-                "aciklama": "Açıklama"
-            })
-            
-            # Renkli veya biçimlendirilmiş gösterim
-            st.dataframe(
-                gorunum_df[["ID", "Tarih", "Tür", "Kategori", "Tutar (₺)", "Açıklama"]],
-                use_container_width=True,
-                height=380
-            )
+        st.dataframe(
+            gosterim_df[["ID", "Tarih", "Tür", "Kategori", "Açıklama", "Tutar (₺)"]],
+            use_container_width=True,
+            hide_index=True
+        )
 
+        st.markdown("#### 🗑️ Kalem Sil")
+        sil_col1, sil_col2 = st.columns([3, 1])
+        with sil_col1:
+            silinecek_secim = st.selectbox(
+                "Silmek istediğiniz kalemi seçin:",
+                options=aktif_df["id"].tolist(),
+                format_func=lambda x: f"ID #{x} | {aktif_df.loc[aktif_df['id']==x, 'tarih'].dt.strftime('%d.%m.%Y').values[0]} | {aktif_df.loc[aktif_df['id']==x, 'tur'].values[0]} | {aktif_df.loc[aktif_df['id']==x, 'kategori'].values[0]} | {aktif_df.loc[aktif_df['id']==x, 'tutar'].values[0]:,.2f} ₺ - {aktif_df.loc[aktif_df['id']==x, 'aciklama'].values[0] or ''}"
+            )
+        with sil_col2:
+            st.write("")
+            st.write("")
+            if st.button("🗑️ Seçili Kalemi Sil", type="primary", use_container_width=True):
+                veri_sil(silinecek_secim)
+                st.success(f"ID #{silinecek_secim} başarıyla silindi!")
+                st.rerun()
+
+        # Dışa Aktar Butonu
+        st.download_button(
+            label="📥 Bu Dönemi CSV Olarak İndir",
+            data=aktif_df.to_csv(index=False).encode('utf-8'),
+            file_name=f"muhasebe_{secilen_ay}.csv",
+            mime="text/csv"
+        )
+
+# TAB 2: Grafikler ve Analiz
 with tab2:
-    st.subheader("Dönem Gelir ve Gider Dağılımı")
-    if df_islemler.empty:
-        st.info("Grafik oluşturmak için veri bulunamadı.")
+    if aktif_df.empty:
+        st.info("Grafik oluşturmak için en az bir gelir veya gider kaydı girilmelidir.")
     else:
-        g1, g2 = st.columns(2)
+        grafik_col1, grafik_col2 = st.columns(2)
         
-        df_giderler = df_islemler[df_islemler["tur"] == "Gider"]
-        df_gelirler = df_islemler[df_islemler["tur"] == "Gelir"]
+        gelirler = aktif_df[aktif_df["tur"] == "Gelir"]
+        giderler = aktif_df[aktif_df["tur"] == "Gider"]
         
-        with g1:
-            if not df_giderler.empty:
-                gider_ozet = df_giderler.groupby("kategori")["tutar"].sum().reset_index()
-                fig_gider = px.pie(
-                    gider_ozet,
-                    values="tutar",
-                    names="kategori",
-                    title="🔴 Gider (Çıktı) Dağılımı",
-                    hole=0.4,
-                    color_discrete_sequence=px.colors.sequential.Reds_r
-                )
-                st.plotly_chart(fig_gider, use_container_width=True)
-            else:
-                st.info("Bu dönem için kayıtlı gider bulunmuyor.")
-                
-        with g2:
-            if not df_gelirler.empty:
-                gelir_ozet = df_gelirler.groupby("kategori")["tutar"].sum().reset_index()
+        with grafik_col1:
+            st.write("#### 🟢 Gelir Dağılımı")
+            if not gelirler.empty:
                 fig_gelir = px.pie(
-                    gelir_ozet,
-                    values="tutar",
-                    names="kategori",
-                    title="🟢 Gelir (Girdi) Dağılımı",
+                    gelirler, 
+                    values="tutar", 
+                    names="kategori", 
                     hole=0.4,
                     color_discrete_sequence=px.colors.sequential.Greens_r
                 )
+                fig_gelir.update_traces(textposition='inside', textinfo='percent+label')
                 st.plotly_chart(fig_gelir, use_container_width=True)
             else:
-                st.info("Bu dönem için kayıtlı gelir bulunmuyor.")
+                st.caption("Seçili dönemde gelir kaydı bulunmuyor.")
 
+        with grafik_col2:
+            st.write("#### 🔴 Gider Dağılımı")
+            if not giderler.empty:
+                fig_gider = px.pie(
+                    giderler, 
+                    values="tutar", 
+                    names="kategori", 
+                    hole=0.4,
+                    color_discrete_sequence=px.colors.sequential.Reds_r
+                )
+                fig_gider.update_traces(textposition='inside', textinfo='percent+label')
+                st.plotly_chart(fig_gider, use_container_width=True)
+            else:
+                st.caption("Seçili dönemde gider kaydı bulunmuyor.")
+
+# TAB 3: Aylık Kâr-Zarar Tablosu (Genel Karşılaştırma)
 with tab3:
-    st.subheader("📊 Aylık Kâr / Zarar Karşılaştırma Raporu")
+    st.write("### 📅 Ay Ay Kâr - Zarar Dengesi")
     
-    df_tum = islemleri_getir("Tüm Zamanlar")
-    if df_tum.empty:
-        st.info("Karşılaştırma için yeterli veri bulunmamaktadır.")
+    if df.empty:
+        st.info("Henüz geçmiş kayıt bulunmamaktadır.")
     else:
-        # Aylık özet gruplaması
-        aylik_pivot = df_tum.pivot_table(
-            index="yil_ay",
-            columns="tur",
-            values="tutar",
-            aggfunc="sum",
-            fill_value=0
-        ).reset_index()
+        # Aylara göre grupla
+        aylik_ozet = df.groupby(["yil_ay", "tur"])["tutar"].sum().unstack(fill_value=0)
         
-        if "Gelir" not in aylik_pivot.columns:
-            aylik_pivot["Gelir"] = 0.0
-        if "Gider" not in aylik_pivot.columns:
-            aylik_pivot["Gider"] = 0.0
+        if "Gelir" not in aylik_ozet.columns:
+            aylik_ozet["Gelir"] = 0.0
+        if "Gider" not in aylik_ozet.columns:
+            aylik_ozet["Gider"] = 0.0
             
-        aylik_pivot = aylik_pivot.sort_values("yil_ay")
-        aylik_pivot["Net Kâr / Zarar"] = aylik_pivot["Gelir"] - aylik_pivot["Gider"]
-        aylik_pivot["Kâr Durumu"] = aylik_pivot["Net Kâr / Zarar"].apply(lambda x: "🟢 Kâr" if x >= 0 else "🔴 Zarar")
+        aylik_ozet["Net Kâr / Zarar"] = aylik_ozet["Gelir"] - aylik_ozet["Gider"]
+        aylik_ozet["Kâr Marjı (%)"] = aylik_ozet.apply(
+            lambda r: (r["Net Kâr / Zarar"] / r["Gelir"] * 100) if r["Gelir"] > 0 else 0.0, axis=1
+        )
         
-        # Kar/Zarar Çubuk Grafiği
+        # Grafik
+        aylik_ozet_reset = aylik_ozet.reset_index()
         fig_bar = go.Figure()
         fig_bar.add_trace(go.Bar(
-            x=aylik_pivot["yil_ay"],
-            y=aylik_pivot["Gelir"],
-            name="Toplam Gelir",
+            x=aylik_ozet_reset["yil_ay"],
+            y=aylik_ozet_reset["Gelir"],
+            name="Toplam Gelir (Girdi)",
             marker_color="#2ecc71"
         ))
         fig_bar.add_trace(go.Bar(
-            x=aylik_pivot["yil_ay"],
-            y=aylik_pivot["Gider"],
-            name="Toplam Gider",
+            x=aylik_ozet_reset["yil_ay"],
+            y=aylik_ozet_reset["Gider"],
+            name="Toplam Gider (Çıktı)",
             marker_color="#e74c3c"
         ))
         fig_bar.add_trace(go.Scatter(
-            x=aylik_pivot["yil_ay"],
-            y=aylik_pivot["Net Kâr / Zarar"],
+            x=aylik_ozet_reset["yil_ay"],
+            y=aylik_ozet_reset["Net Kâr / Zarar"],
             name="Net Kâr/Zarar",
-            mode="lines+markers+text",
-            text=[f"{v:,.0f}₺" for v in aylik_pivot["Net Kâr / Zarar"]],
-            textposition="top center",
+            mode="lines+markers",
             line=dict(color="#2980b9", width=3)
         ))
-        
         fig_bar.update_layout(
-            title="Aylara Göre Gelir, Gider ve Net Kâr/Zarar Seyri",
             barmode="group",
             xaxis_title="Dönem (Yıl-Ay)",
             yaxis_title="Tutar (₺)",
-            legend=dict(x=0, y=1.1, orientation="h")
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig_bar, use_container_width=True)
+
+        # Tablo formatı
+        tablo_gosterim = aylik_ozet_reset.sort_values("yil_ay", ascending=False).copy()
+        tablo_gosterim["Gelir (₺)"] = tablo_gosterim["Gelir"].apply(lambda x: f"{x:,.2f} ₺")
+        tablo_gosterim["Gider (₺)"] = tablo_gosterim["Gider"].apply(lambda x: f"{x:,.2f} ₺")
+        tablo_gosterim["Net Kâr / Zarar (₺)"] = tablo_gosterim["Net Kâr / Zarar"].apply(lambda x: f"{x:,.2f} ₺")
+        tablo_gosterim["Kâr Marjı"] = tablo_gosterim["Kâr Marjı (%)"].apply(lambda x: f"%{x:.1f}")
         
-        # Tablo Formatında Gösterim
-        tablo_gosterim = aylik_pivot.copy()
-        tablo_gosterim["Gelir"] = tablo_gosterim["Gelir"].apply(lambda x: f"{x:,.2f} ₺")
-        tablo_gosterim["Gider"] = tablo_gosterim["Gider"].apply(lambda x: f"{x:,.2f} ₺")
-        tablo_gosterim["Net Kâr / Zarar"] = tablo_gosterim["Net Kâr / Zarar"].apply(lambda x: f"{x:,.2f} ₺")
-        tablo_gosterim = tablo_gosterim.rename(columns={"yil_ay": "Ay / Dönem"})
-        
-        st.dataframe(tablo_gosterim[["Ay / Dönem", "Gelir", "Gider", "Net Kâr / Zarar", "Kâr Durumu"]], use_container_width=True)
+        st.dataframe(
+            tablo_gosterim[["yil_ay", "Gelir (₺)", "Gider (₺)", "Net Kâr / Zarar (₺)", "Kâr Marjı"]].rename(columns={"yil_ay": "Ay (Dönem)"}),
+            use_container_width=True,
+            hide_index=True
+        )
